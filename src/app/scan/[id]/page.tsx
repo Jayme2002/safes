@@ -11,6 +11,7 @@ import ScanDetails from '@/components/scan/ScanDetails';
 import ScanProgressComponent from '@/components/scan/ScanProgress';
 import VulnerabilityList from '@/components/scan/VulnerabilityList';
 import { ScanSimulation } from '@/lib/scan/simulation';
+import { AnimatePresence, motion } from 'framer-motion';
 
 export default function ScanPage({ params }: { params: Promise<{ id: string }> }) {
   const { user } = useAuth();
@@ -34,6 +35,16 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   
   // State for console output
   const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+
+  // Add state for transition
+  const [showResults, setShowResults] = useState(false);
+
+  // Create a reference to track if we've already started scanning
+  // to prevent double initialization
+  const scanInitializedRef = useRef(false);
+
+  // New state to control component visibility
+  const [scanUIVisible, setScanUIVisible] = useState(false);
 
   // Load initial scan data
   useEffect(() => {
@@ -233,10 +244,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           // Add completion message to console
           setConsoleOutput(prev => [...prev, `[${new Date().toISOString()}] Scan completed with ${data.vulnerabilities.length} vulnerabilities found.`]);
           
-          // Close the event source
+          // Close the event source and stop simulation
           if (eventSourceRef.current) {
             eventSourceRef.current.close();
             eventSourceRef.current = null;
+          }
+          if (simulationRef.current) {
+            simulationRef.current.stop();
+            simulationRef.current = null;
           }
         }
       } catch (error) {
@@ -267,10 +282,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         // Add failure message to console
         setConsoleOutput(prev => [...prev, `[${new Date().toISOString()}] Scan failed: ${data.message || 'Unknown error'}`]);
         
-        // Close the event source
+        // Close the event source and stop simulation
         if (eventSourceRef.current) {
           eventSourceRef.current.close();
           eventSourceRef.current = null;
+        }
+        if (simulationRef.current) {
+          simulationRef.current.stop();
+          simulationRef.current = null;
         }
       } catch (error) {
         console.error('[SSE] Error parsing scan failure:', error);
@@ -283,13 +302,6 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       
       // Add error message to console
       setConsoleOutput(prev => [...prev, `[${new Date().toISOString()}] SSE connection error. Attempting to reconnect...`]);
-      
-      // Attempt to reconnect if disconnected unexpectedly while scanning
-      if (eventSource.readyState === EventSource.CLOSED && isScanning) {
-        console.log('[SSE] Connection closed unexpectedly, starting fallback visual simulation');
-        // When SSE fails, fall back to visual simulation only
-        startVisualSimulation();
-      }
     });
     
     // Cleanup function to close the connection when component unmounts
@@ -308,28 +320,67 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     };
   }, [isScanning, scanId, user]);
 
+  // Simplified scan start function
   const startScan = async (scanData: Scan) => {
-    if (isScanning) return;
-    setIsScanning(true);
+    if (isScanning || scanInitializedRef.current) {
+      console.log('[Scan Page] Scan already in progress, ignoring duplicate start request');
+      return;
+    }
 
+    // Set the initialized flag immediately to prevent double initialization
+    scanInitializedRef.current = true;
+    
     try {
-      // Update UI to show scanning state
-      if (scanData.status !== ScanStatus.SCANNING) {
-        setScan({
-          ...scanData,
-          status: ScanStatus.SCANNING,
-        });
-      }
-
-      // Set initial progress state
+      // FIRST: Make the UI visible before any other state changes
+      // This ensures the component is mounted when other state changes happen
+      setScanUIVisible(true);
+      
+      // Small delay to ensure the component is properly visible before further updates
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // NEXT: Update all state in a single batch
       setScanProgress({
         stage: ScanStage.INITIAL_CRAWL,
         progress: 0,
         message: 'Starting scan...',
       });
-
-      console.log(`[Scan Page] Starting scan for ${scanData.url} (scan ID: ${scanData.id})`);
-
+      setConsoleOutput([]);
+      
+      // THEN: Update scan state and start scanning
+      setScan({
+        ...scanData,
+        status: ScanStatus.SCANNING,
+      });
+      setIsScanning(true);
+      
+      // Only start the simulation once everything is ready
+      console.log(`[Scan Page] Starting simulation for ${scanData.url} (scan ID: ${scanData.id})`);
+      startVisualSimulation();
+      
+      // Start the actual scan in the background
+      initiateServerScan(scanData);
+    } catch (error) {
+      console.error('Error starting scan:', error);
+      toast.error('Failed to start scan', {
+        description: 'Please try again later.'
+      });
+      setIsScanning(false);
+      scanInitializedRef.current = false;
+      setScanUIVisible(false);
+      
+      // Stop simulation if scan failed to start
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+        simulationRef.current = null;
+      }
+    }
+  };
+  
+  // Separate function to initiate the server scan
+  const initiateServerScan = async (scanData: Scan) => {
+    try {
+      console.log(`[Scan Page] Starting server scan for ${scanData.url} (scan ID: ${scanData.id})`);
+      
       // Start the actual scan in the background
       const scanResponse = await fetch('/api/scan/start', {
         method: 'POST',
@@ -351,17 +402,19 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       toast.success('Scan started successfully', {
         description: 'The scan is now in progress. Results will appear here when complete.'
       });
-
-      // Start visual simulation immediately as a fallback
-      // The SSE connection will provide real progress when available
-      startVisualSimulation();
-      
     } catch (error) {
-      console.error('Error starting scan:', error);
+      console.error('Error starting server scan:', error);
       toast.error('Failed to start scan', {
         description: 'Please try again later.'
       });
       setIsScanning(false);
+      scanInitializedRef.current = false;
+      
+      // Stop simulation if scan failed to start
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+        simulationRef.current = null;
+      }
     }
   };
   
@@ -370,6 +423,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     // Stop any existing simulation
     if (simulationRef.current) {
       simulationRef.current.stop();
+      simulationRef.current = null;
     }
     
     // Create a new simulation
@@ -377,6 +431,23 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       // Progress update callback
       (progress) => {
         setScanProgress(progress);
+      },
+      // Console update callback
+      (message) => {
+        // Update UI console
+        setConsoleOutput(prev => [...prev, message]);
+        // Mirror to IDE console with formatting
+        if (message.startsWith('===')) {
+          console.log('\x1b[36m%s\x1b[0m', message); // Cyan for headers
+        } else if (message.startsWith('✓')) {
+          console.log('\x1b[32m%s\x1b[0m', message); // Green for success
+        } else if (message.startsWith('ERROR:')) {
+          console.log('\x1b[31m%s\x1b[0m', message); // Red for errors
+        } else if (message.startsWith('WARNING:')) {
+          console.log('\x1b[33m%s\x1b[0m', message); // Yellow for warnings
+        } else {
+          console.log('\x1b[0m%s\x1b[0m', message); // Normal text
+        }
       },
       // Has real data callback
       () => {
@@ -399,6 +470,17 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     }
 
     startScan(scan);
+  };
+
+  // Handle scan completion transition
+  const handleScanComplete = () => {
+    // Hide scan UI first
+    setScanUIVisible(false);
+    
+    // Show results after a short delay
+    setTimeout(() => {
+      setShowResults(true);
+    }, 500);
   };
 
   if (isLoading) {
@@ -437,17 +519,37 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       <div className="grid grid-cols-1 gap-6">
         <ScanDetails scan={scan} onStartScan={handleStartScan} />
         
-        {scan.status === ScanStatus.SCANNING && (
-          <ScanProgressComponent 
-            scanProgress={scanProgress} 
-            consoleOutput={consoleOutput} 
-            domain={scan.domain} 
-          />
-        )}
-        
-        {scan.status === ScanStatus.COMPLETED && (
-          <VulnerabilityList vulnerabilities={vulnerabilities} />
-        )}
+        {/* Pre-render both components but control visibility with state */}
+        <AnimatePresence mode="wait">
+          {scanUIVisible && (
+            <motion.div
+              key="scan-progress-container"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.5 }}
+            >
+              <ScanProgressComponent 
+                scanProgress={scanProgress} 
+                consoleOutput={consoleOutput} 
+                domain={scan.domain}
+                onComplete={handleScanComplete}
+              />
+            </motion.div>
+          )}
+          
+          {showResults && (
+            <motion.div
+              key="vulnerability-list"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.5 }}
+            >
+              <VulnerabilityList vulnerabilities={vulnerabilities} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

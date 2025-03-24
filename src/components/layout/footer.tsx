@@ -5,7 +5,7 @@ import Link from 'next/link';
 export default function Footer() {
   return (
     <footer className="border-t border-border bg-background">
-      <div className="container py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl py-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="space-y-4">
             <h3 className="text-lg font-medium">SafeStartup.dev</h3>
