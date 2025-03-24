@@ -35,6 +35,48 @@ yarn-error.log*
 
 # vercel
 .vercel
+# Default ignores
+node_modules/
+.next/
+build/
+dist/
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.DS_Store
+*.log
+logs/
+.vscode/
+.idea/
+
+# Dependency directories
+jspm_packages/
+.web_modules/
+.cache/
+.turbo
+
+# Debug files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local development
+*.local
+
+# Supabase (already exists in supabase/.gitignore but added here for clarity)
+.supabase/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Editor directories and files
+*.swp
+*.swo
+*~
 
 # typescript
 *.tsbuildinfo
