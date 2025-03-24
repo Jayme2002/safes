@@ -68,8 +68,8 @@ export async function POST(request: NextRequest) {
       }
     };
     
-    // Create scanner instance
-    const scanner = new Scanner(scanData.url, progressCallback);
+    // Create scanner instance with scan ID and user ID for progress tracking
+    const scanner = new Scanner(scanData.url, progressCallback, scanId, userId);
     
     console.log('[SCAN DEBUG] Scan started successfully');
     // Run the actual scan - this will crawl and analyze the real website

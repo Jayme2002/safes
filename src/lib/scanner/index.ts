@@ -3,6 +3,13 @@ import * as cheerio from 'cheerio';
 import { ScanProgress, ScanStage, Vulnerability, VulnerabilityType, VulnerabilitySeverity } from '@/types';
 import { generateFixSuggestion } from '@/lib/openai/client';
 import { v4 as uuidv4 } from 'uuid';
+import { 
+  initScanProgress, 
+  updateScanProgress, 
+  addScanConsoleOutput, 
+  completeScan, 
+  failScan 
+} from './progress-store';
 
 // Regular expressions for detecting sensitive information
 const API_KEY_PATTERNS = [
@@ -28,6 +35,92 @@ const XSS_PATTERNS = [
   /eval\s*\([^)]+\)/gi,
 ];
 
+// Custom console logger that captures output
+class CaptureConsole {
+  private originalConsoleLog: any;
+  private originalConsoleError: any;
+  private originalConsoleWarn: any;
+  private originalConsoleInfo: any;
+  private scanId: string;
+
+  constructor(scanId: string) {
+    this.scanId = scanId;
+    this.originalConsoleLog = console.log;
+    this.originalConsoleError = console.error;
+    this.originalConsoleWarn = console.warn;
+    this.originalConsoleInfo = console.info;
+  }
+
+  // Start capturing console output
+  start() {
+    console.log = (...args: any[]) => {
+      // Call original console.log
+      this.originalConsoleLog(...args);
+      
+      // Capture the output
+      const output = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+      ).join(' ');
+      
+      // Send to progress store if it's related to scanning
+      if (output.includes('[Scanner]') || output.includes('[Scan') || output.includes('Scan')) {
+        addScanConsoleOutput(this.scanId, output);
+      }
+    };
+
+    console.error = (...args: any[]) => {
+      // Call original console.error
+      this.originalConsoleError(...args);
+      
+      // Capture the output
+      const output = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+      ).join(' ');
+      
+      // Send to progress store
+      addScanConsoleOutput(this.scanId, `ERROR: ${output}`);
+    };
+
+    console.warn = (...args: any[]) => {
+      // Call original console.warn
+      this.originalConsoleWarn(...args);
+      
+      // Capture the output
+      const output = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+      ).join(' ');
+      
+      // Send to progress store if it's related to scanning
+      if (output.includes('[Scanner]') || output.includes('[Scan') || output.includes('Scan')) {
+        addScanConsoleOutput(this.scanId, `WARNING: ${output}`);
+      }
+    };
+
+    console.info = (...args: any[]) => {
+      // Call original console.info
+      this.originalConsoleInfo(...args);
+      
+      // Capture the output
+      const output = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+      ).join(' ');
+      
+      // Send to progress store if it's related to scanning
+      if (output.includes('[Scanner]') || output.includes('[Scan') || output.includes('Scan')) {
+        addScanConsoleOutput(this.scanId, `INFO: ${output}`);
+      }
+    };
+  }
+
+  // Stop capturing and restore original console methods
+  stop() {
+    console.log = this.originalConsoleLog;
+    console.error = this.originalConsoleError;
+    console.warn = this.originalConsoleWarn;
+    console.info = this.originalConsoleInfo;
+  }
+}
+
 // Scanner class
 export class Scanner {
   private browser: Browser | null = null;
@@ -40,19 +133,42 @@ export class Scanner {
   // Global tracking of vulnerabilities to prevent duplicates across files
   private globalVulnerabilityKeys: Set<string> = new Set<string>();
   private totalVulnerabilitiesDetected: number = 0;
+  private scanId: string = '';
+  private userId: string = '';
+  private consoleCapture: CaptureConsole | null = null;
 
-  constructor(url: string, progressCallback: (progress: ScanProgress) => void) {
+  constructor(url: string, progressCallback: (progress: ScanProgress) => void, scanId?: string, userId?: string) {
     this.url = url;
     this.progressCallback = progressCallback;
+    
+    // Store scan ID and user ID if provided
+    if (scanId) {
+      this.scanId = scanId;
+      this.userId = userId || '';
+      
+      // Initialize progress store
+      initScanProgress(scanId);
+      
+      // Set up console capture
+      this.consoleCapture = new CaptureConsole(scanId);
+    }
   }
 
   // Update scan progress
   private updateProgress(stage: ScanStage, progress: number, message: string) {
-    this.progressCallback({
+    const progressData = {
       stage,
       progress,
       message,
-    });
+    };
+    
+    // Call the original callback
+    this.progressCallback(progressData);
+    
+    // Also update the progress store if we have scan ID
+    if (this.scanId) {
+      updateScanProgress(this.scanId, progressData);
+    }
   }
 
   // Track scanned file
@@ -630,6 +746,11 @@ export class Scanner {
   // Run the scan
   public async scan(): Promise<Vulnerability[]> {
     try {
+      // Start console capture if available
+      if (this.consoleCapture) {
+        this.consoleCapture.start();
+      }
+      
       // Reset tracking variables
       this.vulnerabilities = [];
       this.globalVulnerabilityKeys.clear();
@@ -697,11 +818,30 @@ export class Scanner {
       console.log(`Total vulnerabilities detected: ${this.globalVulnerabilityKeys.size}`);
       console.log('='.repeat(50) + '\n');
 
+      // Update progress store with completion status if we have scan ID
+      if (this.scanId) {
+        completeScan(this.scanId, this.vulnerabilities);
+      }
+
       return this.vulnerabilities;
     } catch (error) {
       console.error('Error during scan:', error);
+      
+      // Update progress store with error if we have scan ID
+      if (this.scanId) {
+        failScan(
+          this.scanId, 
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+      
       throw error;
     } finally {
+      // Stop console capture
+      if (this.consoleCapture) {
+        this.consoleCapture.stop();
+      }
+      
       // Close the browser
       if (this.browser) {
         await this.browser.close();

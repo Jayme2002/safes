@@ -120,3 +120,43 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Custom animations for scan progress */
+@keyframes shine {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes blob {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  25% {
+    transform: translate(20px, -10px) scale(1.1);
+  }
+  50% {
+    transform: translate(0, 20px) scale(0.9);
+  }
+  75% {
+    transform: translate(-20px, -10px) scale(1.05);
+  }
+}
+
+.animate-shine {
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% auto;
+  animation: shine 2s linear infinite;
+}
+
+.animate-blob {
+  animation: blob 10s infinite ease-in-out;
+}
